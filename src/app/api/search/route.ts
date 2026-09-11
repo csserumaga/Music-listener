@@ -1,35 +1,54 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-export async function GET(request: NextRequest) {
-  const query = request.nextUrl.searchParams.get('q')?.trim();
-  if (!query) return NextResponse.json({ tracks: [] });
-  try {
-    const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query + ' music')}`;
-    const response = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, cache: 'no-store' });
-    if (!response.ok) throw new Error('Music search is temporarily unavailable');
-    const html = await response.text();
-    const marker = 'var ytInitialData = ';
-    const start = html.indexOf(marker);
-    if (start < 0) throw new Error('Could not read music results');
-    const jsonStart = start + marker.length;
-    const end = html.indexOf(';</script>', jsonStart);
-    if (end < 0) throw new Error('Could not read music results');
-    const data = JSON.parse(html.slice(jsonStart, end));
-    const tracks: any[] = [];
-    function walk(node:any){
-      if(!node||tracks.length>=12)return;
-      if(Array.isArray(node)){for(const x of node)walk(x);return;}
-      if(typeof node!=='object')return;
-      const v=node.videoRenderer;
-      if(v?.videoId){
-        const name=v.title?.runs?.map((r:any)=>r.text).join('')||v.title?.simpleText||'Untitled';
-        const artists=v.ownerText?.runs?.map((r:any)=>r.text).join('')||v.longBylineText?.runs?.map((r:any)=>r.text).join('')||'YouTube';
-        const thumbs=v.thumbnail?.thumbnails||[];
-        if(!tracks.some(t=>t.id===v.videoId))tracks.push({id:v.videoId,name,artists,image:thumbs.at(-1)?.url||`https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,youtubeUrl:`https://www.youtube.com/watch?v=${v.videoId}`});
-      }
-      for(const value of Object.values(node))walk(value);
-    }
-    walk(data);
-    return NextResponse.json({ tracks });
-  } catch(error){return NextResponse.json({error:error instanceof Error?error.message:'Search failed'},{status:503});}
+const BASE = 'https://api.audius.co/v1';
+const APP = 'MusicListener';
+
+type AudiusTrack = {
+  id?: string;
+  title?: string;
+  duration?: number;
+  genre?: string;
+  mood?: string;
+  permalink?: string;
+  artwork?: Record<string,string>;
+  user?: { name?: string; handle?: string };
+};
+
+function mapTrack(t:AudiusTrack){
+  const artwork=t.artwork||{};
+  return {
+    id:t.id||'',
+    name:t.title||'Untitled',
+    artists:t.user?.name||t.user?.handle||'Audius artist',
+    image:artwork['480x480']||artwork['150x150']||artwork['1000x1000']||'',
+    duration:t.duration||0,
+    genre:t.genre||'',
+    mood:t.mood||'',
+    audiusUrl:t.permalink?`https://audius.co${t.permalink}`:'https://audius.co',
+  };
+}
+
+export async function GET(request:NextRequest){
+  const q=request.nextUrl.searchParams.get('q')?.trim();
+  const mode=request.nextUrl.searchParams.get('mode')||'search';
+  const genre=request.nextUrl.searchParams.get('genre')?.trim();
+  const params=new URLSearchParams({app_name:APP,limit:'20'});
+  let endpoint='/tracks/search';
+  if(mode==='trending'){
+    endpoint='/tracks/trending';
+    params.set('time','week');
+    if(genre)params.set('genre',genre);
+  }else{
+    if(!q)return NextResponse.json({tracks:[]});
+    params.set('query',q);
+  }
+  try{
+    const r=await fetch(`${BASE}${endpoint}?${params.toString()}`,{cache:'no-store',headers:{Accept:'application/json'}});
+    if(!r.ok)throw new Error('Audius is temporarily unavailable');
+    const json=await r.json();
+    const data=Array.isArray(json?.data)?json.data:[];
+    return NextResponse.json({tracks:data.map(mapTrack).filter((t:any)=>t.id)});
+  }catch(error){
+    return NextResponse.json({error:error instanceof Error?error.message:'Music search failed'},{status:503});
+  }
 }
